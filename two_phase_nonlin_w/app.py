@@ -2,7 +2,8 @@ import streamlit as st
 import numpy as np
 import matplotlib.pyplot as plt
 import pickle
-from two_phase import TwoPhase, k_oil, k_water
+from two_phase import TwoPhase, k_oil, k_water, find_peaks_in_ts
+import math
 
 with open("two_phase_nonlin_w/exp_res/solver1.pkl", "rb") as f:
     solver1 = pickle.load(f)
@@ -25,6 +26,13 @@ def expit(x):
     except:
         return 0.
 
+def calculate_grid(n):
+    """
+    Вычисляет оптимальное количество строк и столбцов для размещения n графиков.
+    """
+    cols = math.ceil(math.sqrt(n))  # Количество столбцов — ближайшее целое вверх от корня из n
+    rows = math.ceil(n / cols)      # Количество строк — минимальное число строк для размещения всех графиков
+    return rows, cols
 
 def generate_data(grad, solver):
     mu_oil = (solver.mu_h-solver.mu_o) * expit (solver1.glad * (-grad + solver.G)) + solver.mu_o
@@ -57,11 +65,11 @@ def generate_flow_data(sx, solver):
     V_in_sum = [i/(solver.S*solver.L*solver.m0*20/solver.L) for i in V_in_sum]
     # V_in_sum = [q*solver.dt/(solver.S*solver.L*solver.m0*20/solver.L) for q in Q_in_sum]
     grad_p = grad_p[:, sx]
-    time = solver.time[1:]
-    mu_oil_arr = solver.mu_oil_arr[1:, sx]
-    mu_water_arr = solver.mu_water_arr[1:, sx]
+    time = solver.time
+    mu_oil_arr = solver.mu_oil_arr[:, sx]
+    mu_water_arr = solver.mu_water_arr[:, sx]
 
-    return V_in_sum, Qw_out[1:], Qo_out[1:], Qw_out_sum, Qo_out_sum, mu_oil_arr, mu_water_arr, time, grad_p[1:], sx
+    return V_in_sum, Qw_out, Qo_out, Qw_out_sum, Qo_out_sum, mu_oil_arr, mu_water_arr, time, grad_p, sx
 
 
 # Настройки Streamlit
@@ -123,7 +131,7 @@ if selected_graphs:
     st.pyplot(fig_combined)
 
 # Ползунок для управления масштабом
-factor = st.slider("Выберите долю от длины образца, в которой вывести графики", 0.0, 1.0, 0.1, step=0.2)
+factor = st.slider("Выберите долю от длины образца, в которой вывести графики", 0.0, 1.0, 0.6, step=0.2)
 
 if selected_graphs:
     fig_dynamic, axes_dynamic = plt.subplots(2, 2, figsize=(30, 22))
@@ -155,11 +163,97 @@ if selected_graphs:
         axes_dynamic[1, 0].legend()
 
         # График изменения вязкости
-        axes_dynamic[1, 1].plot(time, mu_oil_arr, '--', label=f'Нефть {idx}')
-        axes_dynamic[1, 1].plot(time, mu_water_arr, '--', label=f'Вода {idx}')
+        axes_dynamic[1, 1].plot(time[1:], mu_oil_arr[1:], '--', label=f'Нефть {idx}')
+        axes_dynamic[1, 1].plot(time[1:], mu_water_arr[1:], '--', label=f'Вода {idx}')
         axes_dynamic[1, 1].set_title("Изменение вязкости фаз")
         axes_dynamic[1, 1].set_xlabel("Время безразмерное")
         axes_dynamic[1, 1].set_ylabel("Вязкость (Па·с)")
         axes_dynamic[1, 1].legend()
 
     st.pyplot(fig_dynamic)
+
+factor1 = st.slider("Выберите интервал времени, где наблюдаются колебания", 0.0, 1.0, value=(0.5, 1.), step=0.05)
+
+if selected_graphs:
+    fig_dynamic, axes_dynamic = plt.subplots(len(selected_graphs), 1, figsize=(30, 22))
+    for i, title in enumerate(selected_graphs):
+        if isinstance(axes_dynamic, np.ndarray):
+            ax1 = axes_dynamic[i]
+        else:
+            ax1 = axes_dynamic
+        solver = mapping[title]
+        idx = title.split()[1]
+        V_in_sum, Qw_out, Qo_out, Qw_out_sum, Qo_out_sum, mu_oil_arr, mu_water_arr, time, grad_p, sx = generate_flow_data(factor, solver)
+        
+        t0, t1 = factor1
+        time_part = (solver.time >= t0) & (solver.time <= t1)
+        peaks, values = find_peaks_in_ts(solver.time[time_part], Qw_out[time_part])
+        
+        # Первая ось (слева)
+        color = 'tab:blue'
+        ax1.set_xlabel('Время (с)')
+        ax1.set_ylabel('Объем добычи м3', color=color)
+        ax1.plot(solver.time[time_part], Qw_out[time_part], color=color, label=f'Вода {idx}')
+        ax1.plot(solver.time[time_part], Qo_out[time_part], color='tab:orange', label=f'Нефть {idx}')
+        for peak in peaks:
+            ax1.axvline(solver.time[time_part][peak], color='gray', linestyle='--')
+        ax1.tick_params(axis='y', labelcolor=color)
+        ax1.set_title(f"Колебания для закона {idx}")
+
+        # Вторая ось (слева, с небольшим смещением)
+        ax2 = ax1.twinx()  # Дублируем ось Y
+        color2 = 'tab:green'
+        ax2.spines['left'].set_position(('axes', -0.1))  # Смещение оси внутрь графика
+        ax2.yaxis.set_label_position('left')
+        ax2.yaxis.tick_left()
+        ax2.set_ylabel('Вязкость воды Па*с', color=color2)
+        ax2.plot(solver.time[time_part], solver.mu_water_arr[time_part, sx], color=color2, linestyle='--', label='Вязкость')
+        ax2.tick_params(axis='y', labelcolor=color2)
+
+        # Вторая ось (справа)
+        ax3 = ax1.twinx()  # Создаём вторую ось, разделяющую ту же ось x
+        color = 'tab:red'
+        ax3.set_ylabel('Градиент Па/м', color=color)
+        ax3.plot(solver.time[time_part], abs(grad_p[time_part]), color=color, linestyle='-.', label='Градиент')
+        ax3.tick_params(axis='y', labelcolor=color)
+
+        # Добавление заголовка и легенды
+        fig_dynamic.suptitle('График с двумя вертикальными осями')
+        fig_dynamic.legend(loc='upper right', bbox_to_anchor=(0.85, 0.85))
+
+        # Отображение сетки и графика
+        plt.grid(True)
+    st.pyplot(fig_dynamic)
+
+st.info(
+    """
+    ### Анализ влияния параметров системы на характеристики колебаний  
+    **w** — вода, **o** — нефть  
+
+    #### 📌 Параметры системы:
+    1️⃣ **mu_otn** — отношение mu_h_w (верхняя полка при прямом проходе) к mu_h_w_b (верхняя полка при обратном проходе)  
+    2️⃣ **mu_o_w** — нижняя полка в законе для вязкости воды  
+    3️⃣ **glad_w** — скорость изменения вязкости в окрестности критического значения градиента при прямом проходе  
+    4️⃣ **glad_w_b** — скорость изменения вязкости в окрестности критического значения градиента при обратном проходе  
+    5️⃣ **Q** — расход на левой границе керна  
+
+    #### 🎯 Характеристики колебаний:
+    1️⃣ **A_(w/o)** — начальная амплитуда колебаний для расхода через сечение со временем  
+    2️⃣ **alfa_(w/o)** — коэффициент затухания колебаний:  
+       alfa = - (1 / delta_t) * np.log(A_end / A_start)  
+    3️⃣ **freq_(w/o)** — доминирующая частота в преобразовании Фурье  
+    """
+)
+
+st.info("1) График отображает коэффициент корреляции Пирсона, характеризующий линейнуй зависимость между двумя величинами")
+st.latex(r"""
+r = \frac{\sum (X_i - \bar{X}) (Y_i - \bar{Y})}
+{\sqrt{\sum (X_i - \bar{X})^2} \cdot \sqrt{\sum (Y_i - \bar{Y})^2}}
+""")
+st.image("two_phase_nonlin_w/exp_res/corr.png")
+
+st.info("2) Представление парных диаграмм рассеяния")
+st.image("two_phase_nonlin_w/exp_res/plots.png")
+
+st.info("3) Оценка важности параметров в задаче поиска отображения из пространства параметров в пространство характеристик колебаний. Оценка показывает, насколько каждый параметр влияет на точность отображения.")
+st.image("two_phase_nonlin_w/exp_res/model.png")

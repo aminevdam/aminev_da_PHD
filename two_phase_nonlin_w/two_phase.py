@@ -2,12 +2,132 @@ import numpy as np
 from scipy.optimize import newton_krylov, fsolve
 from tqdm import tqdm
 from scipy.interpolate import interp1d
+from scipy.signal import find_peaks
+from scipy.fft import fft, fftfreq
+import matplotlib.pyplot as plt
+
+def estimate_damping_from_peak_difference(time, values, time_delta, interval_fraction=0.1):
+    """
+    Оценивает коэффициент затухания, используя разницу амплитуд между максимумами и минимумами.
+
+    :param time: Массив времени
+    :param values: Массив значений сигнала
+    :param interval_fraction: Доля интервала для анализа начала и конца
+    :return: Оценка коэффициента затухания alpha
+    """
+    t0, t1 = time_delta
+    # Filter the time and values within the time interval
+    mask = (time >= t0) & (time <= t1)
+    time = time[mask]
+    values = values[mask]
+
+    n_points = int(len(time) * interval_fraction)
+
+    #  Начало интервала
+    start_values = values[:n_points]
+    A_max_start = np.max(start_values)
+    A_min_start = np.min(start_values)
+    A_start = A_max_start - A_min_start
+    t_max_start = time[np.argmax(start_values)]
+    t_min_start = time[np.argmin(start_values)]
+
+    # Конец интервала
+    end_values = values[-n_points:]
+    A_max_end = np.max(end_values)
+    A_min_end = np.min(end_values)
+    A_end = A_max_end - A_min_end
+    t_max_end = time[-n_points:][np.argmax(end_values)]
+    t_min_end = time[-n_points:][np.argmin(end_values)]
+
+    # Временной промежуток
+    delta_t = t_max_end - t_max_start
+
+    # Оценка коэффициента затухания
+    if A_end > 0 and A_start > 0:
+        alpha = - (1 / delta_t) * np.log(A_end / A_start)
+    else:
+        alpha = np.nan  # В случае, если амплитуды некорректны
+    
+
+    # Визуализация сигнала и выбранных точек
+    plt.figure(figsize=(12, 6))
+    plt.plot(time, values, label='Сигнал')
+
+    # Отметим выбранные амплитуды
+    plt.scatter(t_max_start, A_max_start, color='green', label='Макс амплитуда (начало)', zorder=5)
+    plt.scatter(t_min_start, A_min_start, color='lime', label='Мин амплитуда (начало)', zorder=5)
+    plt.scatter(t_max_end, A_max_end, color='red', label='Макс амплитуда (конец)', zorder=5)
+    plt.scatter(t_min_end, A_min_end, color='orange', label='Мин амплитуда (конец)', zorder=5)
+
+    # Отметим границы анализируемых интервалов
+    plt.axvline(time[n_points], color='gray', linestyle='--', label='Граница начала')
+    plt.axvline(time[-n_points], color='gray', linestyle='--', label='Граница конца')
+
+    plt.title(f'Коэффициент затухания: alpha = {alpha:.4f}')
+    plt.xlabel('Время (s)')
+    plt.ylabel('Амплитуда')
+    plt.legend()
+    plt.grid(True)
+    plt.show()
+
+    # Вывод значений амплитуд и коэффициента затухания
+    print(f"Начальная амплитуда: {A_start:.4f} (Макс: {A_max_start:.4f}, Мин: {A_min_start:.4f})")
+    print(f"Конечная амплитуда: {A_end:.4f} (Макс: {A_max_end:.4f}, Мин: {A_min_end:.4f})")
+    print(f"Оцененный коэффициент затухания: {alpha:.4f}")
+
+    return alpha, A_start, A_end
+
+def analyze_oscillations(time_array, values_array, time_delta):
+    # Extract the time interval
+    t0, t1 = time_delta
+    # Filter the time and values within the time interval
+    mask = (time_array >= t0) & (time_array <= t1)
+    time_filtered = time_array[mask]
+    values_filtered = values_array[mask]
+    
+    # Fourier Transform
+    N = len(time_filtered)
+    dt = time_filtered[1] - time_filtered[0]  # assuming uniform time steps
+    freqs = fftfreq(N, dt)
+    fft_values = fft(values_filtered)
+    
+    # Find the frequency corresponding to the maximum amplitude
+    magnitudes = np.abs(fft_values)
+    peak_frequency = freqs[np.argmax(magnitudes[1:N//2])]  # exclude DC component (freq 0)
+    peak_amplitude = np.max(magnitudes[1:N//2])
+
+    return peak_frequency, peak_amplitude
 
 def expit(x):
     try:
         return 1 / (1 + np.exp(-x))
     except:
         return 0.
+
+def find_peaks_in_ts(time, values, height_factor=0.3, distance_fraction=0.001, prominence_factor=0.05):
+    """
+    Находит пики во временном ряде и возвращает глобальные индексы исходного массива.
+
+    :param time: Массив времени
+    :param values: Массив значений функции
+    :param time_delta: Интервал времени (t0, t1)
+    :param height_factor: Фактор от максимальной амплитуды для минимальной высоты пика
+    :param distance_fraction: Фракция от длины интервала для минимального расстояния между пиками
+    :param prominence_factor: Фактор от максимальной амплитуды для выделенности пиков
+    :return: Глобальные индексы пиков, значения пиков
+    """
+
+    # Автоматический расчет порогов
+    max_amplitude = np.max(values)
+    height = height_factor * max_amplitude
+    distance = int(distance_fraction * len(time))
+    prominence = prominence_factor * max_amplitude
+
+    # Нахождение пиков
+    peaks, _ = find_peaks(values, height=height, distance=distance, prominence=prominence)
+
+    return peaks, values[peaks]
+
 
 k_water = lambda x: 0.6*(x)**2
 k_oil = lambda x: 0.2*(x-1)**2
